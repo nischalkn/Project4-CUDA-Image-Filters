@@ -11,11 +11,23 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <CudaCompile Include="redEyeReduction.cu">
+      <Filter>src</Filter>
+    </CudaCompile>
+    <CudaCompile Include="seamCarving.cu">
+      <Filter>src</Filter>
+    </CudaCompile>
     <CudaCompile Include="toneMapping.cu">
       <Filter>src</Filter>
     </CudaCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="redEyeReduction.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="seamCarving.h">
+      <Filter>src</Filter>
+    </ClInclude>
     <ClInclude Include="toneMapping.h">
       <Filter>src</Filter>
     </ClInclude>
