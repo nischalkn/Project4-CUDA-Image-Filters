@@ -7,6 +7,6 @@ using namespace std;
 typedef vector<vector<vector<int>>> Img;
 
 namespace redEyeReduction {
-	Img cpuRER(Img in);
-	Img gpuRER(Img in);
+	int cpuMap(size_t rows, size_t cols, float *imgPtr);
+	int gpuMap(size_t rows, size_t cols, float *imgPtr);
 }

@@ -4,11 +4,11 @@
 #include "cuda_runtime.h"
 
 namespace redEyeReduction {
-	Img cpuRER(Img in) {
-		return in;
+	int cpuMap(size_t rows, size_t cols, float *imgPtr) {
+		return 1;
 	}
 
-	Img gpuRER(Img in) {
-		return in;
+	int gpuMap(size_t rows, size_t cols, float *imgPtr) {
+		return 1;
 	}
 }

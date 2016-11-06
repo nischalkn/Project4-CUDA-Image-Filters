@@ -1,6 +1,0 @@
-Converted
-Computing Mapped Image
-got min of 0.477136
-got max of 2.406540
-numBins 1024
-Displaying Image
