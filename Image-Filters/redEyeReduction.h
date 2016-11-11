@@ -2,11 +2,15 @@
 #include <cuda.h>
 #include <vector>
 #include "cuda_runtime.h"
+#include <iostream>
+#include <algorithm>
+#include "opencv2/highgui/highgui.hpp"
+#include "toneMapping.h"
 
 using namespace std;
-typedef vector<vector<vector<int>>> Img;
+using namespace cv;
 
 namespace redEyeReduction {
-	int cpuMap(size_t rows, size_t cols, float *imgPtr);
-	int gpuMap(size_t rows, size_t cols, float *imgPtr);
+	Mat cpuRER(Mat im, Mat eyeTemplate);
+	Mat gpuRER(Mat im, Mat eyeTemplate);
 }
