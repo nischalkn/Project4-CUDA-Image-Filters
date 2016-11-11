@@ -86,7 +86,16 @@ namespace toneMapping {
 		delete[] norm_cdf;
 	}
 
-	int cpuMap(size_t rows, size_t cols, float *imgPtr) {
+	Mat cpuMap(Mat im) {
+		size_t rows = im.rows;
+		size_t cols = im.cols;
+		im.convertTo(im, CV_32FC3);
+
+		float *imgPtr = new float[im.rows * im.cols * im.channels()];
+		float *cvPtr = im.ptr<float>(0);
+		for (size_t i = 0; i < im.rows * im.cols * im.channels(); ++i)
+			imgPtr[i] = cvPtr[i];
+
 		size_t numPixels = rows * cols;
 		float *red = new float[numPixels];
 		float *green = new float[numPixels];
@@ -104,11 +113,7 @@ namespace toneMapping {
 		unsigned int *cdf = (unsigned int *)malloc(sizeof(unsigned int)*numBins);
 		float min_logLum, max_logLum;
 		rgb_to_xyY(rows, cols, red, green, blue, x, y, logY);
-		/*std::cout << "CDF" << std::endl;
-		for (size_t i = 0; i < numPixels; i++)
-		{
-			std::cout << i << ", " << logY[i] << std::endl;
-		}*/
+
 		calculateCDF(rows, cols, numBins, logY, cdf, min_logLum, max_logLum);
 		mapImage(rows, cols, min_logLum, max_logLum, cdf, x, y, logY, red, green, blue);
 
@@ -117,6 +122,11 @@ namespace toneMapping {
 			imgPtr[3 * i + 1] = green[i];
 			imgPtr[3 * i + 2] = red[i];
 		}
+		int sizes[2];
+		sizes[0] = rows;
+		sizes[1] = cols;
+		cv::Mat imageHDR(2, sizes, CV_32FC3, (void *)imgPtr);
+
 		delete[] cdf;
 		delete[] red;
 		delete[] green;
@@ -124,17 +134,15 @@ namespace toneMapping {
 		delete[] x;
 		delete[] y;
 		delete[] logY;
-		return 1;
+		return imageHDR;
 	}
 
-	__global__ void rgb2xyY(float* red, float* green, float* blue, float* d_x, float* d_y,
-		float* d_logY, int rows, int cols) {
-		int  ny = rows;
-		int  nx = cols;
+	__global__ void rgb2xyY(float* red, float* green, float* blue, float* dev_x, float* dev_y,
+		float* dev_logY, int rows, int cols) {
 		int2 image_index_2d = make_int2((blockIdx.x * blockDim.x) + threadIdx.x, (blockIdx.y * blockDim.y) + threadIdx.y);
-		int  image_index_1d = (nx * image_index_2d.y) + image_index_2d.x;
+		int  image_index_1d = (cols * image_index_2d.y) + image_index_2d.x;
 
-		if (image_index_2d.x < nx && image_index_2d.y < ny)
+		if (image_index_2d.x < cols && image_index_2d.y < rows)
 		{
 			float r = red[image_index_1d];
 			float g = green[image_index_1d];
@@ -150,23 +158,20 @@ namespace toneMapping {
 
 			float log_Y = log10f(0.0001f + Y);
 
-			d_x[image_index_1d] = x;
-			d_y[image_index_1d] = y;
-			d_logY[image_index_1d] = log_Y;
+			dev_x[image_index_1d] = x;
+			dev_y[image_index_1d] = y;
+			dev_logY[image_index_1d] = log_Y;
 		}
 	}
 
-	// calculate reduce max or min and stick the value in d_answer.
-	__global__
-		void reduce_minmax_kernel(const float* const d_in, float* d_out, const size_t size, int minmax) {
+	__global__ void reduce_minmax_kernel(float* const dev_in, float* dev_out, size_t size, int minmax) {
 			extern __shared__ float shared[];
 
 			int mid = threadIdx.x + blockDim.x * blockIdx.x;
 			int tid = threadIdx.x;
 
-			// we have 1 thread per block, so copying the entire block should work fine
 			if (mid < size) {
-				shared[tid] = d_in[mid];
+				shared[tid] = dev_in[mid];
 			}
 			else {
 				if (minmax == 0)
@@ -175,18 +180,14 @@ namespace toneMapping {
 					shared[tid] = -FLT_MAX;
 			}
 
-			// wait for all threads to copy the memory
 			__syncthreads();
 
-			// don't do any thing with memory if we happen to be far off ( I don't know how this works with
-			// sync threads so I moved it after that point )
 			if (mid >= size) {
 				if (tid == 0) {
 					if (minmax == 0)
-						d_out[blockIdx.x] = FLT_MAX;
+						dev_out[blockIdx.x] = FLT_MAX;
 					else
-						d_out[blockIdx.x] = -FLT_MAX;
-
+						dev_out[blockIdx.x] = -FLT_MAX;
 				}
 				return;
 			}
@@ -205,21 +206,21 @@ namespace toneMapping {
 			}
 
 			if (tid == 0) {
-				d_out[blockIdx.x] = shared[0];
+				dev_out[blockIdx.x] = shared[0];
 			}
 		}
 
-	__global__ void histogram_kernel(unsigned int* d_bins, const float* d_in, const int bin_count, const float lum_min, const float lum_max, const int size) {
+	__global__ void histogram_kernel(unsigned int* dev_bins, const float* dev_in, const int bin_count, const float lum_min, const float lum_max, const int size) {
 		int mid = threadIdx.x + blockDim.x * blockIdx.x;
 		if (mid >= size)
 			return;
 		float lum_range = lum_max - lum_min;
-		int bin = ((d_in[mid] - lum_min) / lum_range) * bin_count;
+		int bin = ((dev_in[mid] - lum_min) / lum_range) * bin_count;
 
-		atomicAdd(&d_bins[bin], 1);
+		atomicAdd(&dev_bins[bin], 1);
 	}
 
-	__global__ void scan_kernel(unsigned int* d_bins, int size) {
+	__global__ void scan_kernel(unsigned int* dev_bins, int size) {
 			int mid = threadIdx.x + blockDim.x * blockIdx.x;
 			if (mid >= size)
 				return;
@@ -229,57 +230,45 @@ namespace toneMapping {
 
 				unsigned int val = 0;
 				if (spot >= 0)
-					val = d_bins[spot];
+					val = dev_bins[spot];
 				__syncthreads();
 				if (spot >= 0)
-					d_bins[mid] += val;
+					dev_bins[mid] += val;
 				__syncthreads();
 
 			}
 		}
 
-	__global__ void normalize_cdf(unsigned int* d_input_cdf, float* d_output_cdf, int n)
+	__global__ void normalize_cdf(unsigned int* dev_input_cdf, float* dev_output_cdf, int n)
 	{
-		const float normalization_constant = 1.f / d_input_cdf[n - 1];
+		const float normalization_constant = 1.f / dev_input_cdf[n - 1];
 
 		int global_index_1d = (blockIdx.x * blockDim.x) + threadIdx.x;
 
 		if (global_index_1d < n)
 		{
-			unsigned int input_value = d_input_cdf[global_index_1d];
+			unsigned int input_value = dev_input_cdf[global_index_1d];
 			float        output_value = input_value * normalization_constant;
 
-			d_output_cdf[global_index_1d] = output_value;
+			dev_output_cdf[global_index_1d] = output_value;
 		}
 	}
 
-	__global__ void tonemap(
-		float* d_x,
-		float* d_y,
-		float* d_log_Y,
-		float* d_cdf_norm,
-		float* d_r_new,
-		float* d_g_new,
-		float* d_b_new,
-		float  min_log_Y,
-		float  max_log_Y,
-		float  log_Y_range,
-		int    num_bins,
-		int    num_pixels_y,
-		int    num_pixels_x)
+	__global__ void tonemap(float* dev_x,	float* dev_y,	float* dev_log_Y, float* dev_cdf_norm, float* dev_r_new,
+		float* dev_g_new, float* dev_b_new,	float  min_log_Y, float  max_log_Y,	float  log_Y_range,	int num_bins,
+		int    num_pixels_y, int num_pixels_x)
 	{
 		int  ny = num_pixels_y;
 		int  nx = num_pixels_x;
 		int2 image_index_2d = make_int2((blockIdx.x * blockDim.x) + threadIdx.x, (blockIdx.y * blockDim.y) + threadIdx.y);
 		int  image_index_1d = (nx * image_index_2d.y) + image_index_2d.x;
 
-		if (image_index_2d.x < nx && image_index_2d.y < ny)
-		{
-			float x = d_x[image_index_1d];
-			float y = d_y[image_index_1d];
-			float log_Y = d_log_Y[image_index_1d];
+		if (image_index_2d.x < nx && image_index_2d.y < ny) {
+			float x = dev_x[image_index_1d];
+			float y = dev_y[image_index_1d];
+			float log_Y = dev_log_Y[image_index_1d];
 			int   bin_index = min(num_bins - 1, int((num_bins * (log_Y - min_log_Y)) / log_Y_range));
-			float Y_new = d_cdf_norm[bin_index];
+			float Y_new = dev_cdf_norm[bin_index];
 
 			float X_new = x * (Y_new / y);
 			float Z_new = (1 - x - y) * (Y_new / y);
@@ -288,15 +277,13 @@ namespace toneMapping {
 			float g_new = (X_new * -0.9689f) + (Y_new *  1.8758f) + (Z_new *  0.0415f);
 			float b_new = (X_new *  0.0557f) + (Y_new * -0.2040f) + (Z_new *  1.0570f);
 
-			d_r_new[image_index_1d] = r_new;
-			d_g_new[image_index_1d] = g_new;
-			d_b_new[image_index_1d] = b_new;
+			dev_r_new[image_index_1d] = r_new;
+			dev_g_new[image_index_1d] = g_new;
+			dev_b_new[image_index_1d] = b_new;
 		}
 	}
 
-	float reduce_minmax(const float* const d_in, const size_t size, int minmax) {
-		// we need to keep reducing until we get to the amount that we consider 
-		// having the entire thing fit into one block size
+	float reduce_minmax(float* d_in, size_t size, int minmax) {
 		size_t curr_size = size;
 		float* dev_data;
 
@@ -335,7 +322,16 @@ namespace toneMapping {
 		return result;
 	}
 
-	int gpuMap(size_t rows, size_t cols, float *imgPtr) {
+	Mat gpuMap(Mat im) {
+		size_t rows = im.rows;
+		size_t cols = im.cols;
+		im.convertTo(im, CV_32FC3);
+
+		float *imgPtr = new float[im.rows * im.cols * im.channels()];
+		float *cvPtr = im.ptr<float>(0);
+		for (size_t i = 0; i < im.rows * im.cols * im.channels(); ++i)
+			imgPtr[i] = cvPtr[i];
+
 		float *dev_red, *dev_green, *dev_blue, *dev_x, *dev_y, *dev_logY;
 		size_t numPixels = rows * cols;
 		cudaMalloc((void**)&dev_red, sizeof(float)*numPixels);
@@ -365,7 +361,6 @@ namespace toneMapping {
 		float *logY = (float *)malloc(sizeof(float)*numPixels);
 		cudaMemcpy(logY, dev_logY, numPixels*sizeof(float), cudaMemcpyDeviceToHost);
 
-		// Calculate CDF
 		float min_logLum, max_logLum;
 		unsigned int *dev_cdf;
 		cudaMalloc((void**)&dev_cdf, sizeof(unsigned int)*numBins);
@@ -393,8 +388,6 @@ namespace toneMapping {
 		cudaMemcpy(dev_cdf, dev_bins, sizeof(unsigned int)*numBins, cudaMemcpyDeviceToDevice);
 		cudaFree(dev_bins);
 
-
-		// Map
 		float *dev_cdfNorm;
 		cudaMalloc(&dev_cdfNorm, sizeof(float)* numBins);
 
@@ -410,7 +403,6 @@ namespace toneMapping {
 			rows, cols);
 		cudaDeviceSynchronize();
 
-		// Copy back data
 		cudaMemcpy(red, dev_red, sizeof(float)* numPixels, cudaMemcpyDeviceToHost);
 		cudaMemcpy(green, dev_green, sizeof(float)* numPixels, cudaMemcpyDeviceToHost);
 		cudaMemcpy(blue, dev_blue, sizeof(float)* numPixels, cudaMemcpyDeviceToHost);
@@ -420,6 +412,11 @@ namespace toneMapping {
 			imgPtr[3 * i + 1] = green[i];
 			imgPtr[3 * i + 2] = red[i];
 		}
+
+		int sizes[2];
+		sizes[0] = rows;
+		sizes[1] = cols;
+		cv::Mat imageHDR(2, sizes, CV_32FC3, (void *)imgPtr);
 
 		cudaFree(dev_red);
 		cudaFree(dev_green);
@@ -435,6 +432,6 @@ namespace toneMapping {
 		delete[] blue;
 
 
-		return 1;
+		return imageHDR;
 	}
 }
