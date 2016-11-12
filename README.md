@@ -46,10 +46,6 @@ Variation of different stages of the algorithm for different block sizes is show
 
 ![](image/graph1c.jpg)
 
-[comment]: <> (additionally the performance of the algorithm was further improved by changing .... The effect of this can be seen in the following image.)
-
-[comment]: <> (![](image/graph3.png))
-
 ### Seam Carving
 Seam carving is a process of finding a link of pixels from top to bottom or left to right such that it represents the minimum energy seam. By removing this seam we can resize the image without reducing the size of critical objects in the frame [[1](http://perso.crans.org/frenoy/matlab2012/seamcarving.pdf)].The purpose of the algorithm is image retargeting, which is the problem of displaying images without distortion on media of various sizes (cell phones, projection screens) using document standards, like HTML, that already support dynamic changes in page layout and text but not images.
 In the following image, the left image is the input image, the center image resized naively by 100x100 pixels and the right most image is content aware resized by 100x100 pixels.
