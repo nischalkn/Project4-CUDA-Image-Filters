@@ -2,11 +2,11 @@
 #include <cuda.h>
 #include "toneMapping.h"
 #include "cuda_runtime.h"
+#define PROFILE 1
 
 size_t numBins = 1024;
-#define BLOCK_SIZE 32
-const dim3 blockSize(32, 16, 1);
-const int numThreads = 192;
+#define BLOCK_SIZE 256
+const dim3 blockSize(16, 16, 1);
 
 namespace toneMapping {
 	void rgb_to_xyY(size_t rows, size_t cols, float *red, float *green, float *blue, float *x, float *y, float *logY) {
@@ -23,6 +23,10 @@ namespace toneMapping {
 	}
 
 	void calculateCDF(size_t rows, size_t cols, size_t numBins, float *luminance, unsigned int* cdf, float &min_logLum, float &max_logLum) {
+		#if PROFILE
+			CpuTimer timer;
+			timer.Start();
+		#endif
 		min_logLum = luminance[0];
 		max_logLum = luminance[0];
 
@@ -30,6 +34,10 @@ namespace toneMapping {
 				min_logLum = std::min(luminance[i], min_logLum);
 				max_logLum = std::max(luminance[i], max_logLum);
 		}
+		#if PROFILE
+			timer.Stop();
+			printf("minMax: %f s.\n", timer.Elapsed());
+		#endif	
 
 		float logLumRange = max_logLum - min_logLum;
 
@@ -37,16 +45,30 @@ namespace toneMapping {
 
 		for (size_t i = 0; i < numBins; ++i) histo[i] = 0;
 
+		#if PROFILE
+			timer.Start();
+		#endif
 		for (size_t i = 0; i < rows*cols; ++i) {
 				unsigned int bin = std::min(static_cast<unsigned int>(numBins - 1),
 					static_cast<unsigned int>((luminance[i] - min_logLum) / logLumRange * numBins));
 				histo[bin]++;
 		}
+		#if PROFILE
+			timer.Stop();
+			printf("histogram: %f s.\n", timer.Elapsed());
+		#endif	
 
+		#if PROFILE
+			timer.Start();
+		#endif
 		cdf[0] = 0;
 		for (size_t i = 1; i < numBins; ++i) {
 			cdf[i] = cdf[i - 1] + histo[i - 1];
 		}
+		#if PROFILE
+			timer.Stop();
+			printf("CDF: %f s.\n", timer.Elapsed());
+		#endif	
 
 		delete[] histo;
 	}
@@ -112,10 +134,27 @@ namespace toneMapping {
 
 		unsigned int *cdf = (unsigned int *)malloc(sizeof(unsigned int)*numBins);
 		float min_logLum, max_logLum;
+		
+		#if PROFILE
+			CpuTimer timer;
+			timer.Start();
+		#endif
 		rgb_to_xyY(rows, cols, red, green, blue, x, y, logY);
+		#if PROFILE
+			timer.Stop();
+			printf("rgb2xyY: %f s.\n", timer.Elapsed());
+		#endif
 
 		calculateCDF(rows, cols, numBins, logY, cdf, min_logLum, max_logLum);
+
+		#if PROFILE
+			timer.Start();
+		#endif
 		mapImage(rows, cols, min_logLum, max_logLum, cdf, x, y, logY, red, green, blue);
+		#if PROFILE
+			timer.Stop();
+			printf("mapImage: %f s.\n", timer.Elapsed());
+		#endif
 
 		for (int i = 0; i < numPixels; ++i) {
 			imgPtr[3 * i + 0] = blue[i];
@@ -295,13 +334,23 @@ namespace toneMapping {
 
 		dim3 thread_dim(BLOCK_SIZE);
 		const int shared_mem_size = sizeof(float)*BLOCK_SIZE;
+		dim3 block_dim((int)ceil((float)size / (float)BLOCK_SIZE) + 1);
 		int maxSize;
+		#if PROFILE
+			GpuTimer timer;
+		#endif
 		while (1) {
 			maxSize = (int)ceil((float)curr_size / (float)BLOCK_SIZE) + 1;
 			cudaMalloc(&dev_temp, sizeof(float)* maxSize);
 
-			dim3 block_dim((int)ceil((float)size / (float)BLOCK_SIZE) + 1);
+			#if PROFILE
+				timer.Start();
+			#endif
 			reduce_minmax_kernel << <block_dim, thread_dim, shared_mem_size >> >(dev_data, dev_temp, curr_size, minmax);
+			#if PROFILE
+				timer.Stop();
+				printf("minMax: %f msecs.\n", timer.Elapsed());
+			#endif
 			cudaDeviceSynchronize();
 
 
@@ -356,7 +405,15 @@ namespace toneMapping {
 		cudaMemcpy(dev_blue, blue, sizeof(float)*numPixels, cudaMemcpyHostToDevice);
 
 		const dim3 gridSize((cols + blockSize.x - 1) / blockSize.x, (rows + blockSize.y - 1) / blockSize.y, 1);
+		#if PROFILE
+			GpuTimer timer;
+			timer.Start();
+		#endif
 		rgb2xyY << <gridSize, blockSize >> >(dev_red, dev_green, dev_blue,	dev_x, dev_y, dev_logY, rows, cols);
+		#if PROFILE
+			timer.Stop();
+			printf("rgb2xyY: %f msecs.\n", timer.Elapsed());
+		#endif
 
 		float *logY = (float *)malloc(sizeof(float)*numPixels);
 		cudaMemcpy(logY, dev_logY, numPixels*sizeof(float), cudaMemcpyDeviceToHost);
@@ -364,25 +421,41 @@ namespace toneMapping {
 		float min_logLum, max_logLum;
 		unsigned int *dev_cdf;
 		cudaMalloc((void**)&dev_cdf, sizeof(unsigned int)*numBins);
+		
 		min_logLum = reduce_minmax(dev_logY, numPixels, 0);
 		max_logLum = reduce_minmax(dev_logY, numPixels, 1);
 
-		printf("got min of %f\n", min_logLum);
+		/*printf("got min of %f\n", min_logLum);
 		printf("got max of %f\n", max_logLum);
-		printf("numBins %d\n", numBins);
+		printf("numBins %d\n", numBins);*/
 
 		unsigned int* dev_bins;
 
 		cudaMalloc(&dev_bins, sizeof(unsigned int)*numBins);
 		cudaMemset(dev_bins, 0, sizeof(unsigned int)*numBins);
-		dim3 thread_dim(1024);
-		dim3 hist_block_dim((int)ceil((float)numPixels / (float)thread_dim.x) + 1);
-		histogram_kernel << <hist_block_dim, thread_dim >> >(dev_bins, dev_logY, numBins, min_logLum, max_logLum, numPixels);
-
+		dim3 thread_dim(BLOCK_SIZE);
+		const int shared_mem_size = sizeof(float)*BLOCK_SIZE;
+		dim3 block_dim((int)ceil((float)numPixels / (float)thread_dim.x) + 1);
+		//dim3 thread_dim(1024);
+		//dim3 hist_block_dim((int)ceil((float)numPixels / (float)thread_dim.x) + 1);
+		#if PROFILE
+			timer.Start();
+		#endif
+			histogram_kernel << <block_dim, thread_dim >> >(dev_bins, dev_logY, numBins, min_logLum, max_logLum, numPixels);
+		#if PROFILE
+			timer.Stop();
+			printf("histogram_kernel: %f msecs.\n", timer.Elapsed());
+		#endif
 		
 		dim3 scan_block_dim((int)ceil((float)numBins / (float)thread_dim.x) + 1);
-
-		scan_kernel << <scan_block_dim, thread_dim >> >(dev_bins, numBins);
+		#if PROFILE
+			timer.Start();
+		#endif
+			scan_kernel << <scan_block_dim, thread_dim >> >(dev_bins, numBins);
+		#if PROFILE
+			timer.Stop();
+			printf("scan_kernel: %f msecs.\n", timer.Elapsed());
+		#endif
 		cudaDeviceSynchronize();
 
 		cudaMemcpy(dev_cdf, dev_bins, sizeof(unsigned int)*numBins, cudaMemcpyDeviceToDevice);
@@ -390,17 +463,26 @@ namespace toneMapping {
 
 		float *dev_cdfNorm;
 		cudaMalloc(&dev_cdfNorm, sizeof(float)* numBins);
-
-		normalize_cdf << < (numBins + numThreads - 1) / numThreads, numThreads >> >(dev_cdf, dev_cdfNorm, numBins);
+		#if PROFILE
+			timer.Start();
+		#endif
+		normalize_cdf << < (numBins + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE >> >(dev_cdf, dev_cdfNorm, numBins);
+		#if PROFILE
+			timer.Stop();
+			printf("normalize_cdf: %f msecs.\n", timer.Elapsed());
+		#endif
 
 		cudaDeviceSynchronize();
 		float log_Y_range = max_logLum - min_logLum;
-		tonemap << <gridSize, blockSize >> >(dev_x, dev_y, dev_logY,
-			dev_cdfNorm,
-			dev_red, dev_green, dev_blue,
-			min_logLum, max_logLum,
-			log_Y_range, numBins,
-			rows, cols);
+		#if PROFILE
+			timer.Start();
+		#endif
+		tonemap << <gridSize, blockSize >> >(dev_x, dev_y, dev_logY, dev_cdfNorm, dev_red, dev_green, 
+			dev_blue, min_logLum, max_logLum, log_Y_range, numBins, rows, cols);
+		#if PROFILE
+			timer.Stop();
+		#endif
+		printf("tonemap: %f msecs.\n", timer.Elapsed());
 		cudaDeviceSynchronize();
 
 		cudaMemcpy(red, dev_red, sizeof(float)* numPixels, cudaMemcpyDeviceToHost);

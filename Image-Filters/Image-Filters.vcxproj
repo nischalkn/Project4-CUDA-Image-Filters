@@ -153,6 +153,7 @@ copy "$(CudaToolkitBinDir)\cudart*.dll" "$(OutDir)"</Command>
     </CudaCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <CudaCompile Include="edgePreservingBlur.cu" />
     <CudaCompile Include="redEyeReduction.cu" />
     <CudaCompile Include="seamCarving.cu" />
     <CudaCompile Include="toneMapping.cu" />
@@ -161,8 +162,10 @@ copy "$(CudaToolkitBinDir)\cudart*.dll" "$(OutDir)"</Command>
     <ClCompile Include="main.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="edgePreservingBlur.h" />
     <ClInclude Include="redEyeReduction.h" />
     <ClInclude Include="seamCarving.h" />
+    <ClInclude Include="timer.h" />
     <ClInclude Include="toneMapping.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

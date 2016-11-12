@@ -3,6 +3,7 @@
 #include "edgePreservingBlur.h"
 #include "cuda_runtime.h"
 
+#define PROFILE 1
 namespace edgePreservingBlur {
 	float gaussian[64];
 	__constant__ float c_gaussian[64];
@@ -21,20 +22,12 @@ namespace edgePreservingBlur {
 		return expf(-mod / (2.0f * d * d));
 	}
 
-	Mat cpuBlur(Mat im, float euclidean_delta, int cols, int rows, int filter_radius)
-	{
-		im.convertTo(im, CV_32FC3);
-		im /= 255;
-		Mat output(im.size(), im.type());
-		float3 * src = (float3*)im.ptr<float3>();
-		float3 * dest = (float3*)output.ptr<float3>();
-		computeGaussianKernel(euclidean_delta, filter_radius);
-
+	void bilateralFilter(float3 *input, float3 *output, float euclidean_delta, size_t cols, size_t rows, int filter_radius) {
 		for (int y = 0; y < rows; ++y) {
 			for (int x = 0; x < cols; ++x) {
 				float sum = 0.0f;
 				float3 t = { 0.f, 0.f, 0.f };
-				float3 center = src[y * cols + x];
+				float3 center = input[y * cols + x];
 				int r = filter_radius;
 
 				float domainDist = 0.0f, colorDist = 0.0f, factor = 0.0f;
@@ -49,7 +42,7 @@ namespace edgePreservingBlur {
 						if (crtX < 0) 				crtX = 0;
 						else if (crtX >= cols)	 	crtX = cols - 1;
 
-						float3 curPix = src[crtY * cols + crtX];
+						float3 curPix = input[crtY * cols + crtX];
 						domainDist = gaussian[r + i] * gaussian[r + j];
 						colorDist = euclideanLen(curPix, center, euclidean_delta);
 						factor = domainDist * colorDist;
@@ -58,9 +51,30 @@ namespace edgePreservingBlur {
 					}
 				}
 
-				dest[y * cols + x] = multiply(1.f / sum, t);
+				output[y * cols + x] = multiply(1.f / sum, t);
 			}
 		}
+	}
+
+	Mat cpuBlur(Mat im, float euclidean_delta, int filter_radius)
+	{
+		im.convertTo(im, CV_32FC3);
+		im /= 255;
+		size_t rows = im.rows;
+		size_t cols = im.cols;
+		Mat output(im.size(), im.type());
+		float3 * src = (float3*)im.ptr<float3>();
+		float3 * dest = (float3*)output.ptr<float3>();
+		computeGaussianKernel(euclidean_delta, filter_radius);
+		#if PROFILE
+			CpuTimer timer;
+			timer.Start();
+		#endif
+		bilateralFilter(src,dest,euclidean_delta,cols,rows,filter_radius);
+		#if PROFILE
+			timer.Stop();
+			printf("filter: %f s.\n", timer.Elapsed());
+		#endif
 		output *= 255;
 		output.convertTo(output, CV_8UC3);
 		return output;
@@ -127,10 +141,12 @@ namespace edgePreservingBlur {
 		}
 	}
 
-	Mat gpuBlur(Mat im, float euclidean_delta, int cols, int rows, int filter_radius)
+	Mat gpuBlur(Mat im, float euclidean_delta, int filter_radius)
 	{
 		im.convertTo(im, CV_32FC3);
 		im /= 255;
+		size_t cols = im.cols;
+		size_t rows = im.rows;
 		Mat result(im.size(), im.type());
 		float3 * input = (float3*)im.ptr<float3>();
 		float3 * output = (float3*)result.ptr<float3>();
@@ -147,9 +163,15 @@ namespace edgePreservingBlur {
 
 		dim3 block(16, 16);
 		dim3 grid((cols + block.x - 1) / block.x, (rows + block.y - 1) / block.y);
-
+		#if PROFILE
+			GpuTimer timer;
+			timer.Start();
+		#endif
 		bilateralFilterCudaKernel << <grid, block >> >(dev_input, dev_output, euclidean_delta, cols, rows, filter_radius);
-
+		#if PROFILE
+			timer.Stop();
+			printf("filter kernel: %f msecs.\n", timer.Elapsed());
+		#endif
 		//timer.Stop();
 		//printf("Own Cuda code ran in: %f msecs.\n", timer.Elapsed());
 

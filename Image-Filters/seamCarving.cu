@@ -3,8 +3,9 @@
 #include "seamCarving.h"
 #include "cuda_runtime.h"
 
-#define BLOCK_SIZE 128
-const dim3 blockSize(32, 16, 1);
+#define PROFILE 1
+#define BLOCK_SIZE 256
+const dim3 blockSize(16, 16, 1);
 
 namespace seamCarving {
 
@@ -129,9 +130,31 @@ namespace seamCarving {
 			for (int i = 0; i < seams; ++i) {
 				size_t rows = im.rows;
 				size_t cols = im.cols;
+				#if PROFILE
+					CpuTimer timer;
+					timer.Start();
+				#endif
 				computeFullEnergy(im, energy);
+				#if PROFILE
+					timer.Stop();
+					printf("Energy, %f, ", timer.Elapsed());
+				#endif
+				#if PROFILE
+					timer.Start();
+				#endif
 				vector<uint> seam = findVerticalSeam(energy, rows, cols);
+				#if PROFILE
+					timer.Stop();
+					printf("findSeam, %f,", timer.Elapsed());
+				#endif
+				#if PROFILE
+					timer.Start();
+				#endif
 				removeVerticalSeam(seam,&im);
+				#if PROFILE
+					timer.Stop();
+					printf("SeamRemoval, %f\n", timer.Elapsed());
+				#endif
 			}
 		}
 		return im;
@@ -232,6 +255,11 @@ namespace seamCarving {
 
 		dim3 fullBlocksPerGrid((pixelSize + BLOCK_SIZE - 1) / BLOCK_SIZE);
 		dim3 fullBlocksPerGridPadded((paddedArraySize + BLOCK_SIZE - 1) / BLOCK_SIZE);
+
+		#if PROFILE
+			GpuTimer timer;
+			timer.Start();
+		#endif
 		kernMapToBoolean << <fullBlocksPerGrid, BLOCK_SIZE >> >(rows, cols, dev_boolean, dev_seams);
 
 		copyElements << <fullBlocksPerGrid, BLOCK_SIZE >> >(pixelSize, dev_boolean, dev_indices);
@@ -247,6 +275,11 @@ namespace seamCarving {
 		}
 
 		kernScatter << <fullBlocksPerGrid, BLOCK_SIZE >> >(pixelSize, dev_odata, dev_idata, dev_boolean, dev_indices);
+
+		#if PROFILE
+			timer.Stop();
+			printf("Stream Compaction, %f \n", timer.Elapsed());
+		#endif
 
 		cudaMemcpy(dev_idata, dev_odata, pixelSize*sizeof(unsigned char), cudaMemcpyDeviceToDevice);
 		cudaMemcpy(&count, dev_indices + paddedArraySize - 1, sizeof(int), cudaMemcpyDeviceToHost);
@@ -295,10 +328,28 @@ namespace seamCarving {
 		else {
 			for (int i = 0; i < seams; ++i) {
 				const dim3 gridSize((cols + blockSize.x - 1) / blockSize.x, (rows + blockSize.y - 1) / blockSize.y, 1);
+				#if PROFILE
+					GpuTimer timer;
+					timer.Start();
+				#endif
 				computeEnergyGPU << <gridSize, blockSize >> >(rows, cols, dev_imgPtr, dev_energy);
+				#if PROFILE
+					timer.Stop();
+					printf("Compute Energy, %f ,", timer.Elapsed());
+				#endif
+
 				unsigned int *energy = new unsigned int[rows*cols * 3];
 				cudaMemcpy(energy, dev_energy, sizeof(unsigned int)*rows*cols, cudaMemcpyDeviceToHost);
+				#if PROFILE
+					CpuTimer timer2;
+					timer2.Start();
+				#endif
 				vector<uint> seam = findVerticalSeam(energy, rows, cols);
+				#if PROFILE
+					timer2.Stop();
+					printf("find seam, %f ,", timer2.Elapsed());
+				#endif
+
 				cudaMemcpy(dev_seams, &seam[0], sizeof(unsigned int)*rows, cudaMemcpyHostToDevice);
 				removeVerticalSeamGPU(rows, cols, dev_imgPtr, dev_imgPtrBuffer, dev_seams, dev_boolean, dev_indices);
 				cols--;

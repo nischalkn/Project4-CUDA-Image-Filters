@@ -3,6 +3,10 @@
 #include "redEyeReduction.h"
 #include "cuda_runtime.h"
 
+#define PROFILE 1
+#define BLOCK_SIZE 256
+dim3 blockSize(32, 8, 1);
+
 namespace redEyeReduction {
 	void splitChannels(Mat im, unsigned char *red, unsigned char *green, unsigned char *blue) {
 		size_t numPixels = im.rows*im.cols;
@@ -79,8 +83,8 @@ namespace redEyeReduction {
 
 	void sortCPU(unsigned int* inputVals, unsigned int* inputPos, unsigned int* outputVals, unsigned int* outputPos, size_t numElems)
 	{
-		const int numBits = 1;
-		const int numBins = 1 << numBits;
+		int numBits = 1;
+		int numBins = 1 << numBits;
 
 		unsigned int *binHistogram = new unsigned int[numBins];
 		unsigned int *binScan = new unsigned int[numBins];
@@ -183,30 +187,73 @@ namespace redEyeReduction {
 		r_mean = ((float)r_sum) / numPixels_template;
 		g_mean = ((float)g_sum) / numPixels_template;
 		b_mean = ((float)b_sum) / numPixels_template;
-
+		
+		#if PROFILE
+			CpuTimer timer;
+			timer.Start();
+		#endif
 		normalized_cross_correlation(red_normalized, red, red_template, rows, cols, (rows_template - 1) / 2, 
 			rows_template, (cols_template - 1) / 2, cols_template, numPixels_template, r_mean);
 		normalized_cross_correlation(green_normalized, green, green_template, rows, cols, (rows_template - 1) / 2,
 			rows_template, (cols_template - 1) / 2, cols_template, numPixels_template, g_mean);
 		normalized_cross_correlation(blue_normalized, blue, blue_template, rows, cols, (rows_template - 1) / 2,
 			rows_template, (cols_template - 1) / 2, cols_template, numPixels_template, b_mean);
+		#if PROFILE
+			timer.Stop();
+			printf("cross correlation: %f s.\n", timer.Elapsed());
+		#endif
 
+		#if PROFILE
+			timer.Start();
+		#endif
 		for (size_t i = 0; i < numPixels; i++)
 			CCR[i] = red_normalized[i] * green_normalized[i] * blue_normalized[i];
-
+		#if PROFILE
+			timer.Stop();
+			printf("create normalized CCR: %f s.\n", timer.Elapsed());
+		#endif
+		
+		#if PROFILE
+			timer.Start();
+		#endif
 		float minVal = CCR[0];
 		for (size_t i = 1; i < rows*cols; ++i)
 			minVal = std::min(CCR[i], minVal);
+		#if PROFILE
+			timer.Stop();
+			printf("minValue: %f s.\n", timer.Elapsed());
+		#endif
 
+		#if PROFILE
+			timer.Start();
+		#endif
 		for (size_t i = 0; i < numPixels; ++i) {
 			CCR[i] = CCR[i] - minVal;
 			inputPos[i] = i;
 		}
+		#if PROFILE
+			timer.Stop();
+			printf("mean shift: %f s.\n", timer.Elapsed());
+		#endif
 		memcpy(inputVal, CCR, sizeof(unsigned int)*numPixels);
 
+		#if PROFILE
+			timer.Start();
+		#endif
 		sortCPU(inputVal, inputPos, outputVal, outputPos, numPixels);
+		#if PROFILE
+			timer.Stop();
+			printf("sort: %f s.\n", timer.Elapsed());
+		#endif
 
+		#if PROFILE
+			timer.Start();
+		#endif
 		remap(outputPos, blue, green, red, 40, rows, cols, 9, 9);
+		#if PROFILE
+			timer.Stop();
+			printf("Remap: %f s.\n", timer.Elapsed());
+		#endif
 
 		unsigned char *imgPtr = new unsigned char[numPixels * im.channels()];
 		for (int i = 0; i < numPixels; ++i) {
@@ -386,7 +433,7 @@ namespace redEyeReduction {
 	void sort(unsigned int* dev_inputVals, unsigned int* dev_inputPos, unsigned int* dev_outputVals, unsigned int* dev_outputPos,
 		size_t numElems)
 	{
-		dim3 gridSize(ceil((float)(numElems) / 1024) + 1);
+		dim3 gridSize(ceil((float)(numElems) / BLOCK_SIZE) + 1);
 		dim3 blockSize(1024);
 
 		unsigned int* dev_histogram;
@@ -400,16 +447,24 @@ namespace redEyeReduction {
 			cudaMemset(dev_outputVals, 0, numElems * sizeof(unsigned int));
 			cudaMemset(dev_outputPos, 0, numElems * sizeof(unsigned int));
 
-			compute_histogram << <gridSize, blockSize >> >(dev_inputVals, dev_histogram, pass, numElems);
+			#if PROFILE
+				GpuTimer timer;
+				timer.Start();
+			#endif
+			compute_histogram << <gridSize, BLOCK_SIZE >> >(dev_inputVals, dev_histogram, pass, numElems);
 			cudaDeviceSynchronize();
 
-			for (unsigned int base = 0; base < gridSize.x; ++base) {
-				scan_element << <dim3(1), blockSize >> >(dev_inputVals, dev_scaned, base, pass, numElems, blockSize.x);
+			for (unsigned int base = 0; base < gridSize.x; base++) {
+				scan_element << <dim3(1), 1024 >> >(dev_inputVals, dev_scaned, base, pass, numElems, blockSize.x);
 				cudaDeviceSynchronize();
 			}
 
-			move_element << <gridSize, blockSize >> >(dev_inputVals, dev_inputPos, dev_outputVals, dev_outputPos, dev_histogram, dev_scaned, pass, numElems);
+			move_element << <gridSize, BLOCK_SIZE >> >(dev_inputVals, dev_inputPos, dev_outputVals, dev_outputPos, dev_histogram, dev_scaned, pass, numElems);
 			cudaDeviceSynchronize();
+			#if PROFILE
+				timer.Stop();
+				printf("sort: %f msecs.\n", timer.Elapsed());
+			#endif
 
 			cudaMemcpy(dev_inputVals, dev_outputVals, numElems * sizeof(unsigned int), cudaMemcpyDeviceToDevice);
 			cudaMemcpy(dev_inputPos, dev_outputPos, numElems * sizeof(unsigned int), cudaMemcpyDeviceToDevice);
@@ -510,11 +565,12 @@ namespace redEyeReduction {
 		cudaMemcpy(dev_green_template, green_template, sizeof(unsigned char)*numPixels_template, cudaMemcpyHostToDevice);
 		cudaMemcpy(dev_blue_template, blue_template, sizeof(unsigned char)*numPixels_template, cudaMemcpyHostToDevice);
 
-		const dim3 blockSize(32, 8, 1);
-		const dim3 gridSize((cols + blockSize.x - 1) / blockSize.x, (rows + blockSize.y - 1) / blockSize.y, 1);
+		dim3 gridSize((cols + blockSize.x - 1) / blockSize.x, (rows + blockSize.y - 1) / blockSize.y, 1);
 
-		//now compute the cross-correlations for each channel
-
+		#if PROFILE
+			GpuTimer timer;
+			timer.Start();
+		#endif
 		naive_normalized_cross_correlation << <gridSize, blockSize >> >(dev_red_normalized, dev_red, dev_red_template,
 			rows, cols, (rows_template - 1) / 2, rows_template, (cols_template - 1) / 2, cols_template,	numPixels_template, r_mean);
 		cudaDeviceSynchronize();
@@ -526,27 +582,50 @@ namespace redEyeReduction {
 		naive_normalized_cross_correlation << <gridSize, blockSize >> >(dev_blue_normalized, dev_blue, dev_blue_template,
 			rows, cols, (rows_template - 1) / 2, rows_template, (cols_template - 1) / 2, cols_template, numPixels_template, b_mean);
 		cudaDeviceSynchronize();
+		#if PROFILE
+			timer.Stop();
+			printf("cross correlation: %f msecs.\n", timer.Elapsed());
+		#endif
 
+		#if PROFILE
+			timer.Start();
+		#endif
 		create_normalized_matrix << < gridSize, blockSize >> >(dev_red_normalized, dev_green_normalized, dev_blue_normalized, dev_normalized,
 			rows, cols);
+		#if PROFILE
+			timer.Stop();
+			printf("normalized cross correlation: %f msecs.\n", timer.Elapsed());
+		#endif
 
 		float minVal = toneMapping::reduce_minmax(dev_normalized, numPixels, 0);
 
+		#if PROFILE
+			timer.Start();
+		#endif
 		mean_shift << < gridSize, blockSize >> >(dev_normalized, minVal, rows, cols);
-		
-		dim3 gridSize2(ceil((float)(numPixels) / 1024) + 1);
-		dim3 blockSize2(1024);
-		allocatePos << <gridSize2, blockSize2 >> >(dev_ipPosition, numPixels);
+		#if PROFILE
+			timer.Stop();
+			printf("mean shift: %f msecs.\n", timer.Elapsed());
+		#endif
+
+		dim3 gridSize2(ceil((float)(numPixels) / BLOCK_SIZE) + 1);
+		allocatePos << <gridSize2, BLOCK_SIZE >> >(dev_ipPosition, numPixels);
 
 		cudaMemcpy(dev_input, dev_normalized, sizeof(unsigned int)*numPixels, cudaMemcpyDeviceToDevice);
+		
 		sort(dev_input, dev_ipPosition, dev_normalized_sorted, dev_opPosition, numPixels);
 
-		const dim3 blockSize3(256, 1, 1);
-		const dim3 gridSize3((40 + blockSize.x - 1) / blockSize.x, 1, 1);
-
-		remove_redness_from_coordinates << <gridSize3, blockSize3 >> >(dev_opPosition, dev_blue, dev_green,
+		dim3 gridSize3((40 + BLOCK_SIZE - 1) / BLOCK_SIZE, 1, 1);
+		#if PROFILE
+			timer.Start();
+		#endif
+			remove_redness_from_coordinates << <gridSize3, BLOCK_SIZE >> >(dev_opPosition, dev_blue, dev_green,
 			dev_red, 40, rows, cols, 9, 9);
-
+		#if PROFILE
+			timer.Stop();
+			printf("remap: %f msecs.\n", timer.Elapsed());
+		#endif
+			
 		cudaMemcpy(red, dev_red, sizeof(unsigned char)*numPixels, cudaMemcpyDeviceToHost);
 
 		unsigned char *imgPtr = new unsigned char[numPixels * im.channels()];

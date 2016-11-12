@@ -5,6 +5,7 @@
 #include <iostream>
 #include <algorithm>
 #include "opencv2/highgui/highgui.hpp"
+#include "timer.h"
 
 using namespace std;
 using namespace cv;

@@ -20,6 +20,9 @@
     <CudaCompile Include="toneMapping.cu">
       <Filter>src</Filter>
     </CudaCompile>
+    <CudaCompile Include="edgePreservingBlur.cu">
+      <Filter>src</Filter>
+    </CudaCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="redEyeReduction.h">
@@ -29,6 +32,12 @@
       <Filter>src</Filter>
     </ClInclude>
     <ClInclude Include="toneMapping.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="timer.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="edgePreservingBlur.h">
       <Filter>src</Filter>
     </ClInclude>
   </ItemGroup>
