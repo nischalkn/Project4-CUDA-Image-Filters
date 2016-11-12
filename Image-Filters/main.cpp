@@ -74,6 +74,7 @@ int main(int argc, char** argv)
 	#if PROFILE
 		timerCPU.Start();
 	#endif
+		// cpuCarve(image, direction, number of seams),    0 -> horizontal, 1 -> vertical
 		//im = seamCarving::cpuCarve(im, 0, 100);
 		im = seamCarving::cpuCarve(im, 1, 100);
 	#if PROFILE
@@ -85,6 +86,7 @@ int main(int argc, char** argv)
 	#if PROFILE
 		timerGPU.Start();
 	#endif
+		// gpuCarve(image, direction, number of seams),    0 -> horizontal, 1 -> vertical
 		//im = seamCarving::gpuCarve(im, 0, 10);
 		im = seamCarving::gpuCarve(im, 1, 100);
 	#if PROFILE
