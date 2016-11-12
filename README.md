@@ -39,9 +39,11 @@ The performance of CPU and GPU implementation of tone mapping with different blo
 ![](image/graph1a.jpg)
 
 The average time taken by different stages of the algorithm is documented below. It is seen that all of the stages perform much better on the GPU. The tone mapping stage has the highest improvement.
+
 ![](image/graph1b.jpg)
 
 Variation of different stages of the algorithm for different block sizes is shown in the image below. The kernel to find minimum and maximum of the array and the tone mapping kernel have a sharp improvement in performance with mid size kernel compared to small sizes. This is because each min/max calls involves multiple calls of the kernel which has a high overhead with small block sizes.
+
 ![](image/graph1c.jpg)
 
 [comment]: <> (additionally the performance of the algorithm was further improved by changing .... The effect of this can be seen in the following image.)
@@ -63,13 +65,17 @@ The GPU implementation of this algorithm uses 3 kernels
 * Find minimum energy seam
 * Removing pixels along the seam using Stream Compaction
 
-The performance of these stages on CPU and GPU have been recorded and shown in Fig.
+The performance of seam carving on CPU and GPU have been recorded and shown in the figure below. The GPU time also includes the time taken for memory transfer. It is seen that the GPU variant of the seam carving performs much slower than the CPU variant. This is explained in the next graph. Also the GPU performance is best when the block size is 256
 
 ![](image/graph2a.jpg)
-![](image/graph2b.jpg)
-![](image/graph2c.jpg)
 
-It is seen that the
+Only 2 kernels are used because the step of finding the minimum energy seam is a sequential process and hence there is no advantage of using the CPU. The stage of computing the energy is a data parallel process and hence and parallelized and hence its performance increases substantially. But however the process of removing the seam pixels is performed using stream compaction. Since a very few pixels are removed in each iteration it is an inefficient process and hence this stage uses a considerable amount of time.
+
+![](image/graph2b.jpg)
+
+Variation of different stages of the algorithm for different block sizes is shown in the image below. It is seen that the best performance is obtained with a block size of 128 or 256.
+
+![](image/graph2c.jpg)
 
 ### Red Eye Reduction
 Red eye reduction is an algorithm used to remove the effect of red pupil on images of faces taken under flash in low ambient light conditions. This is done by first finding the normalized cross correlation scores using the template of a red eye. Then the next step is to sort the pixels according to the decreasing order of the normalized scores and finally remapping the red channel of pixels with high correlation score to remove the red eye effect. The following image shows the image before and after red eye reduction filter
@@ -83,20 +89,21 @@ The following are the 3 major kernels involved in the red eye reduction process
 * Sorting the normalization scores
 * Remapping of the red eye pixels
 
-The performance of these stages on CPU and GPU have been recorded and shown in Fig.
+The performance of red eye reduction on CPU and GPU have been recorded and shown in figure below. It is seen that the performance improves 6 times on the GPU.
 
 ![](image/graph3a.jpg)
+
+The time taken by various states is shown in the figure below. The most time consuming operation is the calculation of the cross correlation score. It is calculated using template matching which is data parallel, hence its performance improves drastically. On the other hand the performance of the sorting algorithm decreases on the GPU due to the large number of pixels resulting in a large number of blocks and multiple kernel launches. All the other kernels have an improvement in performance.
+
 ![](image/graph3b.jpg)
-It is seen that the
 
 ### Edge Preserving Blur
+ In Edge preserving blur the intensity value at each pixel in an image is replaced by a weighted average of intensity values from nearby pixels. This weight can be based on a Gaussian distribution. Crucially, the weights depend not only on Euclidean distance of pixels, but also on the radiometric differences (e.g. range differences, such as color intensity, depth distance, etc.). This preserves sharp edges by systematically looping through each pixel and adjusting weights to the adjacent pixels accordingly.
 
 Input Image                |  Output Image
 :-------------------------:|:-------------------------:
 ![](image/input4.jpg)      |  ![](image/output4.jpg)
 
-The performance of these stages on CPU and GPU have been recorded and shown in Fig.
+The performance on CPU and GPU have been recorded and shown in figure below. It is seen that a kernel with 512 blocks has the best performance
 
 ![](image/graph4a.jpg)
-
-It is seen that the
