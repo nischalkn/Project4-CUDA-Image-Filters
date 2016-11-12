@@ -3,10 +3,11 @@
 #include "toneMapping.h"
 #include "cuda_runtime.h"
 #define PROFILE 1
+#define MINMAX_REDUCE 1
 
 size_t numBins = 1024;
-#define BLOCK_SIZE 256
-const dim3 blockSize(16, 16, 1);
+#define BLOCK_SIZE 512
+const dim3 blockSize(32, 16, 1);
 
 namespace toneMapping {
 	void rgb_to_xyY(size_t rows, size_t cols, float *red, float *green, float *blue, float *x, float *y, float *logY) {
@@ -322,6 +323,45 @@ namespace toneMapping {
 		}
 	}
 
+	__device__ static float atomicMaxCustom(float* address, float val)
+	{
+		int* address_as_i = (int*)address;
+		int old = *address_as_i, assumed;
+		do {
+			assumed = old;
+			old = ::atomicCAS(address_as_i, assumed,
+				__float_as_int(::fmaxf(val, __int_as_float(assumed))));
+		} while (assumed != old);
+		return __int_as_float(old);
+	}
+
+	__device__ static float atomicMinCustom(float* address, float val)
+	{
+		int* address_as_i = (int*)address;
+		int old = *address_as_i, assumed;
+		do {
+			assumed = old;
+			old = ::atomicCAS(address_as_i, assumed,
+				__float_as_int(::fminf(val, __int_as_float(assumed))));
+		} while (assumed != old);
+		return __int_as_float(old);
+	}
+
+	__global__ void global_max(float* values, float* global_max, int n)
+	{
+		int i = threadIdx.x + blockDim.x * blockIdx.x;
+		if (i >= n)
+			return;
+		atomicMaxCustom(global_max, values[i]);
+	}
+
+	__global__ void global_min(float* values, float* global_min, int n)
+	{
+		int i = threadIdx.x + blockDim.x * blockIdx.x;
+		if (i < n)
+			atomicMinCustom(global_min, values[i]);
+	}
+
 	float reduce_minmax(float* d_in, size_t size, int minmax) {
 		size_t curr_size = size;
 		float* dev_data;
@@ -415,29 +455,41 @@ namespace toneMapping {
 			printf("rgb2xyY: %f msecs.\n", timer.Elapsed());
 		#endif
 
-		float *logY = (float *)malloc(sizeof(float)*numPixels);
-		cudaMemcpy(logY, dev_logY, numPixels*sizeof(float), cudaMemcpyDeviceToHost);
-
-		float min_logLum, max_logLum;
+		float min_logLum = 100, max_logLum = 0;
 		unsigned int *dev_cdf;
 		cudaMalloc((void**)&dev_cdf, sizeof(unsigned int)*numBins);
 		
+		#if MINMAX_REDUCE
 		min_logLum = reduce_minmax(dev_logY, numPixels, 0);
 		max_logLum = reduce_minmax(dev_logY, numPixels, 1);
+		#endif
+		dim3 thread_dim(BLOCK_SIZE);
+		const int shared_mem_size = sizeof(float)*BLOCK_SIZE;
+		dim3 block_dim((int)ceil((float)numPixels / (float)thread_dim.x) + 1);
 
-		/*printf("got min of %f\n", min_logLum);
-		printf("got max of %f\n", max_logLum);
-		printf("numBins %d\n", numBins);*/
+		#if MINMAX_REDUCE != 1
+		float *dev_maxLog, *dev_minLog;
+		cudaMalloc((void**)&dev_maxLog, sizeof(float));
+		cudaMalloc((void**)&dev_minLog, sizeof(float));
+		#if PROFILE
+			timer.Start();
+		#endif
+		global_max << <block_dim, thread_dim >> >(dev_logY, dev_maxLog, numPixels);
+		global_min << <block_dim, thread_dim >> >(dev_logY, dev_minLog, numPixels);
+		#if PROFILE
+			timer.Stop();
+			printf("automicMinMax: %f msecs.\n", timer.Elapsed());
+		#endif
+		cudaMemcpy(&max_logLum, dev_maxLog, sizeof(float), cudaMemcpyDeviceToHost);
+		cudaMemcpy(&min_logLum, dev_minLog, sizeof(float), cudaMemcpyDeviceToHost);
+		min_logLum += 0.4;
+		#endif
 
 		unsigned int* dev_bins;
 
 		cudaMalloc(&dev_bins, sizeof(unsigned int)*numBins);
 		cudaMemset(dev_bins, 0, sizeof(unsigned int)*numBins);
-		dim3 thread_dim(BLOCK_SIZE);
-		const int shared_mem_size = sizeof(float)*BLOCK_SIZE;
-		dim3 block_dim((int)ceil((float)numPixels / (float)thread_dim.x) + 1);
-		//dim3 thread_dim(1024);
-		//dim3 hist_block_dim((int)ceil((float)numPixels / (float)thread_dim.x) + 1);
+		
 		#if PROFILE
 			timer.Start();
 		#endif
