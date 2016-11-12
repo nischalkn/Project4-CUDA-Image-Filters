@@ -4,6 +4,8 @@
 #include "cuda_runtime.h"
 
 #define PROFILE 1
+#define STREAMCOMPACTION 1
+
 #define BLOCK_SIZE 256
 const dim3 blockSize(16, 16, 1);
 
@@ -285,7 +287,29 @@ namespace seamCarving {
 		cudaMemcpy(&count, dev_indices + paddedArraySize - 1, sizeof(int), cudaMemcpyDeviceToHost);
 		return count;
 	}
-	
+
+	__global__ void removeSeam(unsigned char *input, unsigned char *output, unsigned int *dev_seams, size_t rows, size_t cols) {
+		long index = (blockIdx.x * blockDim.x) + threadIdx.x;
+		if (index >= rows*cols*3)
+			return;
+		unsigned long thresh1 = 0;
+		unsigned long thresh2 = 0*cols*3 + dev_seams[0]*3;
+		for (int i = 0; i < rows; i++) {
+			if (index >= thresh1 && index < thresh2)
+				output[index - i * 3] = input[index];
+			thresh1 = i*cols * 3 + dev_seams[i] * 3 + 3;
+			thresh2 = (i + 1)*cols * 3 + dev_seams[(i + 1)] * 3;
+		}
+	}
+
+	/*__global__ void removeSeam(unsigned char *input, unsigned char *output, unsigned long thresh1, unsigned long thresh2, size_t n, size_t row) {
+		long index = (blockIdx.x * blockDim.x) + threadIdx.x;
+		if (index >= n)
+			return;
+		if (index >= thresh1 && index < thresh2)
+			output[index - row * 3] = input[index];
+	}*/
+
 	Mat gpuCarve(cv::Mat im, int direction, int seams) {
 		unsigned char *dev_imgPtr, *dev_imgPtrBuffer;
 		unsigned int *dev_energy;
@@ -320,7 +344,14 @@ namespace seamCarving {
 				cudaMemcpy(energy, dev_energy, sizeof(unsigned int)*rows*cols, cudaMemcpyDeviceToHost);
 				vector<uint> seam = findVerticalSeam(energy, rows, cols);
 				cudaMemcpy(dev_seams, &seam[0], sizeof(unsigned int)*rows, cudaMemcpyHostToDevice);
+				#if STREAMCOMPACTION
 				removeVerticalSeamGPU(rows, cols, dev_imgPtr, dev_imgPtrBuffer, dev_seams, dev_boolean, dev_indices);
+				#endif
+				#if STREAMCOMPACTION!=1
+				dim3 gridsize((rows*(cols)* 3 + BLOCK_SIZE - 1) / BLOCK_SIZE);
+				removeSeam << <gridsize, BLOCK_SIZE >> >(dev_imgPtr, dev_imgPtrBuffer, dev_seams, rows, cols);
+				cudaMemcpy(dev_imgPtr, dev_imgPtrBuffer, sizeof(unsigned char)*rows*(cols)* 3, cudaMemcpyDeviceToDevice);
+				#endif
 				cols--;
 			}
 		}
@@ -351,7 +382,21 @@ namespace seamCarving {
 				#endif
 
 				cudaMemcpy(dev_seams, &seam[0], sizeof(unsigned int)*rows, cudaMemcpyHostToDevice);
+				#if STREAMCOMPACTION
 				removeVerticalSeamGPU(rows, cols, dev_imgPtr, dev_imgPtrBuffer, dev_seams, dev_boolean, dev_indices);
+				#endif
+				#if STREAMCOMPACTION!=1
+				#if PROFILE
+				timer.Start();
+				#endif
+				dim3 gridsize((rows*(cols)* 3 + BLOCK_SIZE - 1) / BLOCK_SIZE);
+				removeSeam << <gridsize, BLOCK_SIZE >> >(dev_imgPtr, dev_imgPtrBuffer, dev_seams, rows, cols);
+				cudaMemcpy(dev_imgPtr, dev_imgPtrBuffer, sizeof(unsigned char)*rows*(cols)* 3, cudaMemcpyDeviceToDevice);
+				#if PROFILE
+				timer.Stop();
+				printf("Remove Seam, %f\n", timer.Elapsed());
+				#endif
+				#endif
 				cols--;
 			}
 		}
